@@ -42,7 +42,10 @@ func (s *APIServer) Run() {
 	router := mux.NewRouter()
 	router.HandleFunc("/account", makeHTTPHandleFunc(s.handleAccount))
 	router.HandleFunc("/account/{id}", withJWTAuth(makeHTTPHandleFunc(s.handleSingleAccount), s.store))
+
 	router.HandleFunc("/transfer", makeHTTPHandleFunc(s.handleTransfer))
+
+	router.HandleFunc("/login", makeHTTPHandleFunc(s.handleLogin))
 
 	log.Println("JSON API server running on port: ", s.listenAddr)
 
@@ -58,6 +61,23 @@ func (s *APIServer) handleAccount(w http.ResponseWriter, r *http.Request) error 
 		return s.handleCreateAccount(w, r)
 	}
 	return fmt.Errorf("method not allowed: %s", r.Method)
+}
+
+// 1552347
+func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) error {
+	if r.Method != "POST" {
+		return fmt.Errorf("method not allowed %s", r.Method)
+	}
+	req := new(LoginRequest)
+	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
+		return err
+	}
+	acc, err := s.store.GetAccountByNumber(int(req.Number))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%+v\n", acc)
+	return WriteJSON(w, http.StatusOK, acc)
 }
 
 func (s *APIServer) handleSingleAccount(w http.ResponseWriter, r *http.Request) error {
@@ -94,21 +114,19 @@ func (s *APIServer) handleGetAccountById(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *APIServer) handleCreateAccount(w http.ResponseWriter, r *http.Request) error {
-	createAccReq := new(CreateAccountRequest)
+	req := new(CreateAccountRequest)
 	defer r.Body.Close()
-	if err := json.NewDecoder(r.Body).Decode(createAccReq); err != nil {
-		return err
-	}
-	account := NewAccount(createAccReq.FirstName, createAccReq.LastName)
-	if err := s.store.CreateAccount(account); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 		return err
 	}
 
-	tokenString, err := createJWT(account)
+	account, err := NewAccount(req.FirstName, req.LastName, req.Password)
 	if err != nil {
 		return err
 	}
-	fmt.Println("JWT TOKEN: ", tokenString)
+	if err := s.store.CreateAccount(account); err != nil {
+		return err
+	}
 
 	return WriteJSON(w, http.StatusOK, account)
 }
