@@ -18,6 +18,14 @@ type APIError struct {
 	Error string `json:"error"`
 }
 
+func NewAPIError(s string) *APIError {
+	return &APIError{Error: s}
+}
+
+func permissionDenied(w http.ResponseWriter) {
+	WriteJSON(w, http.StatusForbidden, NewAPIError("permission denied"))
+}
+
 type APIServer struct {
 	listenAddr string
 	store      Storage
@@ -33,7 +41,7 @@ func NewAPIServer(listenAddr string, store Storage) *APIServer {
 func (s *APIServer) Run() {
 	router := mux.NewRouter()
 	router.HandleFunc("/account", makeHTTPHandleFunc(s.handleAccount))
-	router.HandleFunc("/account/{id}", withJWTAuth(makeHTTPHandleFunc(s.handleSingleAccount)))
+	router.HandleFunc("/account/{id}", withJWTAuth(makeHTTPHandleFunc(s.handleSingleAccount), s.store))
 	router.HandleFunc("/transfer", makeHTTPHandleFunc(s.handleTransfer))
 
 	log.Println("JSON API server running on port: ", s.listenAddr)
@@ -139,14 +147,30 @@ func createJWT(account *Account) (string, error) {
 
 // eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2NvdW50TnVtYmVyIjoxNTUyMzQ3LCJleHBpcmVzQXQiOjE1MDAwfQ.hcshnhOW0asPphsUn6NNLaODVRaCP6VddgZ9ZkkvU2Q
 
-func withJWTAuth(handleFunc http.HandlerFunc) http.HandlerFunc {
+func withJWTAuth(handleFunc http.HandlerFunc, s Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("Calling JWT auth Middleware")
 
 		tokenString := r.Header.Get("x-jwt-token")
-		_, err := validateJWT(tokenString)
+		token, err := validateJWT(tokenString)
+
+		if err != nil || !token.Valid {
+			permissionDenied(w)
+			return
+		}
+		userID, err := getId(r)
 		if err != nil {
-			WriteJSON(w, http.StatusForbidden, APIError{Error: "invalid token"})
+			permissionDenied(w)
+			return
+		}
+		account, err := s.GetAccountByID(userID)
+		if err != nil {
+			permissionDenied(w)
+			return
+		}
+		claims := token.Claims.(jwt.MapClaims)
+		if float64(account.Number) != claims["accountNumber"] {
+			permissionDenied(w)
 			return
 		}
 		handleFunc(w, r)
@@ -155,12 +179,13 @@ func withJWTAuth(handleFunc http.HandlerFunc) http.HandlerFunc {
 
 func validateJWT(tokenString string) (*jwt.Token, error) {
 	secret := os.Getenv("JWT_SECRET")
-	return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(secret), nil
-	})
+	return jwt.Parse(tokenString,
+		func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte(secret), nil
+		})
 
 }
 
