@@ -72,12 +72,29 @@ func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) error {
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 		return err
 	}
+	fmt.Println(req.Number)
 	acc, err := s.store.GetAccountByNumber(int(req.Number))
 	if err != nil {
 		return err
 	}
+
+	if !acc.ValidatePassword(req.Password) {
+		return fmt.Errorf("not authenticated")
+	}
+
+	token, err := createJWT(acc)
+	if err != nil {
+		return err
+	}
+
+	resp := LoginResponse{
+		Token:  token,
+		Number: acc.Number,
+	}
+
 	fmt.Printf("%+v\n", acc)
-	return WriteJSON(w, http.StatusOK, acc)
+
+	return WriteJSON(w, http.StatusOK, resp)
 }
 
 func (s *APIServer) handleSingleAccount(w http.ResponseWriter, r *http.Request) error {
