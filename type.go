@@ -8,8 +8,9 @@ import (
 )
 
 type LoginResponse struct {
-	Number int64  `json:"number"`
-	Token  string `json:"token"`
+	Number       int64  `json:"number"`
+	Token        string `json:"token"`
+	RefreshToken string `json:"refreshToken"`
 }
 
 type UserClaims struct {

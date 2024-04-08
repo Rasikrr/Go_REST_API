@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -78,7 +79,6 @@ func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) error {
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 		return err
 	}
-	fmt.Println(req.Number)
 	acc, err := s.store.GetAccountByNumber(int(req.Number))
 	if err != nil {
 		return err
@@ -92,16 +92,18 @@ func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(token)
-
+	refreshToken, err := generateRefreshToken()
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Set-Cookie", fmt.Sprintf("refresh-token=%s; HttpOnly", refreshToken))
 	w.Header().Set("Authorization", "Bearer "+token)
 
 	resp := LoginResponse{
-		Token:  token,
-		Number: acc.Number,
+		Token:        token,
+		RefreshToken: refreshToken,
+		Number:       acc.Number,
 	}
-
-	fmt.Printf("%+v\n", acc)
 
 	return WriteJSON(w, http.StatusOK, resp)
 }
@@ -198,12 +200,10 @@ func withJWTAuth(handleFunc http.HandlerFunc, s Storage) http.HandlerFunc {
 		if err != nil {
 			permissionDenied(w)
 		}
-		fmt.Println(tokenString)
 		token, err := validateJWT(tokenString)
-		fmt.Println(token)
 
 		if err != nil || !token.Valid {
-			fmt.Println(token.Valid)
+			fmt.Println("TOKEN VALID: ", token.Valid)
 			permissionDenied(w)
 			return
 		}
@@ -212,15 +212,12 @@ func withJWTAuth(handleFunc http.HandlerFunc, s Storage) http.HandlerFunc {
 			permissionDenied(w)
 			return
 		}
-		fmt.Println("No error")
 		account, err := s.GetAccountByID(userID)
 		if err != nil {
-			fmt.Println(err)
 			permissionDenied(w)
 			return
 		}
 		claims := token.Claims.(jwt.MapClaims)
-		fmt.Println("%t %d %t %d\n", claims["accountNumber"], claims["accountNumber"], account.Number, account.Number)
 		if float64(account.Number) != claims["accountNumber"] {
 			permissionDenied(w)
 			return
@@ -275,4 +272,17 @@ func getId(r *http.Request) (int, error) {
 		return id, fmt.Errorf("invalid id %s", idStr)
 	}
 	return id, nil
+}
+
+func generateRefreshToken() (string, error) {
+	b := make([]byte, 32)
+
+	s := rand.NewSource(time.Now().Unix())
+	r := rand.New(s)
+
+	if _, err := r.Read(b); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", b), nil
+
 }
