@@ -73,6 +73,7 @@ func (s *PostgresStore) GetAccountByID(id int) (*Account, error) {
 	err := row.Scan(&account.ID,
 		&account.FirstName,
 		&account.LastName,
+		&account.EncryptedPassword,
 		&account.Number,
 		&account.Balance,
 		&account.CreatedAt)
