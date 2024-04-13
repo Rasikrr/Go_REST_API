@@ -18,6 +18,16 @@ type UserClaims struct {
 	jwt.RegisteredClaims
 }
 
+type RefreshTokenClaims struct {
+	AccountId int `json:"accountId"`
+	jwt.RegisteredClaims
+}
+
+type RefreshToken struct {
+	Id    int    `json:"id"`
+	Token string `json:"token"`
+}
+
 type LoginRequest struct {
 	Number   int64  `json:"number"`
 	Password string `json:"password"`

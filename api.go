@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -53,11 +52,62 @@ func (s *APIServer) Run() {
 	router.HandleFunc("/transfer", makeHTTPHandleFunc(s.handleTransfer))
 
 	router.HandleFunc("/login", makeHTTPHandleFunc(s.handleLogin))
+	router.HandleFunc("/refresh", makeHTTPHandleFunc(s.refresh))
 
 	log.Println("JSON API server running on port: ", s.listenAddr)
 
 	http.ListenAndServe(s.listenAddr, router)
 
+}
+
+func (s *APIServer) refresh(w http.ResponseWriter, r *http.Request) error {
+	cookie, err := r.Cookie("refresh-token")
+	if err != nil {
+		return err
+	}
+	refreshToken := cookie.Value
+	validatedJWT, err := validateRefreshToken(refreshToken)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	tokenFromDb, err := s.store.GetRefreshToken(refreshToken)
+	if err != nil {
+		fmt.Println("ТУТ БЛЯ")
+		fmt.Println(err)
+		return err
+	}
+	if tokenFromDb.Token != refreshToken {
+		fmt.Println("Token are not equal")
+		return fmt.Errorf("not equal tokens")
+	}
+	payload := validatedJWT.Claims.(jwt.MapClaims)
+	account, err := s.store.GetAccountByID(int(payload["accountId"].(float64)))
+	if err != nil {
+		fmt.Println("НЕТ ТУТ")
+		fmt.Println("Error while getting account by id", payload["accountId"], err)
+		return err
+	}
+	newJWT, err := createJWT(account)
+	if err != nil {
+		fmt.Println("error while generating jwt", err)
+		return err
+	}
+	newRefreshToken, err := generateRefreshToken(account)
+	if err != nil {
+		fmt.Println("error while generating refresh token", err)
+		return err
+	}
+	err = s.store.DeleteRefreshTokenById(tokenFromDb.Id)
+	if err != nil {
+		fmt.Println(err)
+	}
+	s.store.CreateRefreshToken(newRefreshToken)
+	w.Header().Set("Authorization", "Bearer "+newJWT)
+	w.Header().Set("Set-Cookie", fmt.Sprintf("refresh-token=%s; HttpOnly", newRefreshToken))
+	fmt.Println("NEW TOKEN", newJWT)
+	fmt.Println("REFRESHED SUCCESSFULLY")
+	return nil
 }
 
 func (s *APIServer) handleAccount(w http.ResponseWriter, r *http.Request) error {
@@ -92,10 +142,14 @@ func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	refreshToken, err := generateRefreshToken()
+	refreshToken, err := generateRefreshToken(acc)
 	if err != nil {
+		fmt.Println(err)
 		return err
 	}
+
+	s.store.CreateRefreshToken(refreshToken)
+
 	w.Header().Set("Set-Cookie", fmt.Sprintf("refresh-token=%s; HttpOnly", refreshToken))
 	w.Header().Set("Authorization", "Bearer "+token)
 
@@ -183,7 +237,7 @@ func createJWT(account *Account) (string, error) {
 	claims := &UserClaims{
 		AccountNumber: account.Number,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Second * 300)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Second * 30)),
 		},
 	}
 
@@ -195,15 +249,15 @@ func createJWT(account *Account) (string, error) {
 func withJWTAuth(handleFunc http.HandlerFunc, s Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("Calling JWT auth Middleware")
-
 		tokenString, err := getJWT(r)
 		if err != nil {
+			fmt.Println(err)
 			permissionDenied(w)
+			return
 		}
 		token, err := validateJWT(tokenString)
-
-		if err != nil || !token.Valid {
-			fmt.Println("TOKEN VALID: ", token.Valid)
+		if err != nil {
+			fmt.Println(err)
 			permissionDenied(w)
 			return
 		}
@@ -241,13 +295,17 @@ func getJWT(r *http.Request) (string, error) {
 
 // 603571
 func validateJWT(tokenString string) (*jwt.Token, error) {
-	return jwt.Parse(tokenString,
+	token, err := jwt.Parse(tokenString,
 		func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
 			return []byte(JWT_SECRET), nil
 		})
+	if err != nil || !token.Valid {
+		return nil, err
+	}
+	return token, nil
 
 }
 
@@ -274,15 +332,26 @@ func getId(r *http.Request) (int, error) {
 	return id, nil
 }
 
-func generateRefreshToken() (string, error) {
-	b := make([]byte, 32)
-
-	s := rand.NewSource(time.Now().Unix())
-	r := rand.New(s)
-
-	if _, err := r.Read(b); err != nil {
-		return "", err
+func generateRefreshToken(account *Account) (string, error) {
+	claims := &RefreshTokenClaims{
+		AccountId: account.ID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 24 * 90)),
+		},
 	}
-	return fmt.Sprintf("%x", b), nil
+	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return refreshToken.SignedString([]byte(JWT_SECRET))
+}
 
+func validateRefreshToken(refToken string) (*jwt.Token, error) {
+	token, err := jwt.Parse(refToken, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(JWT_SECRET), nil
+	})
+	if err != nil || !token.Valid {
+		return nil, err
+	}
+	return token, nil
 }

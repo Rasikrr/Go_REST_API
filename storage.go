@@ -13,6 +13,9 @@ type Storage interface {
 	DeleteAccount(int) error
 	UpdateAccount(*Account) error
 	GetAccountByNumber(int) (*Account, error)
+	CreateRefreshToken(string) error
+	DeleteRefreshTokenById(int) error
+	GetRefreshToken(string) (*RefreshToken, error)
 }
 
 type PostgresStore struct {
@@ -55,10 +58,24 @@ func (s *PostgresStore) createAccountTable() error {
 	return err
 }
 
-func (s *PostgresStore) CreateRefreshToken() error {
-	query := `INSERT INTO refresh_tokens(account_id, token, expires_at)
-		VALUES ($1, $2, $3)`
-	_, err := s.db.Exec(query)
+func (s *PostgresStore) CreateRefreshToken(refToken string) error {
+	query := `INSERT INTO refresh_tokens(token)
+		VALUES ($1)`
+	_, err := s.db.Exec(query, refToken)
+	return err
+}
+
+func (s *PostgresStore) GetRefreshToken(token string) (*RefreshToken, error) {
+	query := `SELECT id, token FROM refresh_tokens WHERE token=$1`
+	refToken := new(RefreshToken)
+	row := s.db.QueryRow(query, token)
+	err := row.Scan(&refToken.Id, &refToken.Token)
+	return refToken, err
+}
+
+func (s *PostgresStore) DeleteRefreshTokenById(id int) error {
+	query := `DELETE FROM refresh_tokens WHERE id=$1`
+	_, err := s.db.Exec(query, id)
 	return err
 }
 
@@ -137,9 +154,7 @@ func (s *PostgresStore) DeleteAccount(id int) error {
 func (s *PostgresStore) createRefreshTokensTable() error {
 	query := `CREATE TABLE IF NOT EXISTS refresh_tokens(
 	id SERIAL PRIMARY KEY,
-	account_id int REFERENCES account(id) ON DELETE CASCADE NOT NULL,
-	token VARCHAR(255) NOT NULL UNIQUE,
-	expires_at TIMESTAMP not null
+	token VARCHAR(255) NOT NULL UNIQUE
 	);`
 	_, err := s.db.Exec(query)
 	return err
