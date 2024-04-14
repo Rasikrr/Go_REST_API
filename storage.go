@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	_ "github.com/lib/pq"
+	"go_sql/config"
 )
 
 type Storage interface {
@@ -22,10 +23,10 @@ type PostgresStore struct {
 	db *sql.DB
 }
 
-func NewPostgresStore() (*PostgresStore, error) {
+func NewPostgresStore(dbCfg *config.Storage) (*PostgresStore, error) {
 	connStr := fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=%s password=%s",
-		"127.0.0.1", "5432", "Rasik", "postgres", "disable", "rasik1234")
-	db, err := sql.Open("postgres", connStr)
+		dbCfg.Host, dbCfg.Port, dbCfg.User, dbCfg.Dbname, dbCfg.SslMode, dbCfg.Password)
+	db, err := sql.Open(dbCfg.DriverName, connStr)
 	if err != nil {
 		return nil, err
 	}

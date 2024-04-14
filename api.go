@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/joho/godotenv"
+	"go_sql/config"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -15,8 +18,6 @@ import (
 )
 
 type apiFunc func(http.ResponseWriter, *http.Request) error
-
-const JWT_SECRET = "rasik1234"
 
 type APIError struct {
 	Error string `json:"error"`
@@ -33,19 +34,28 @@ func permissionDenied(w http.ResponseWriter) {
 }
 
 type APIServer struct {
-	listenAddr string
-	store      Storage
+	listenAddr  string
+	store       Storage
+	timeOut     time.Duration
+	idleTimeOut time.Duration
+	jwtSecret   string
 }
 
-func NewAPIServer(listenAddr string, store Storage) *APIServer {
+func NewAPIServer(httpServerCfg *config.HttpServer, store Storage) *APIServer {
 	return &APIServer{
-		listenAddr: listenAddr,
-		store:      store,
+		listenAddr:  httpServerCfg.Address,
+		store:       store,
+		timeOut:     httpServerCfg.Timeout,
+		idleTimeOut: httpServerCfg.IdleTimeout,
 	}
 }
 
 func (s *APIServer) Run() {
 	router := mux.NewRouter()
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal(err)
+	}
 	router.HandleFunc("/account", makeHTTPHandleFunc(s.handleAccount))
 	router.HandleFunc("/account/{id}", withJWTAuth(makeHTTPHandleFunc(s.handleSingleAccount), s.store))
 
@@ -56,8 +66,14 @@ func (s *APIServer) Run() {
 
 	log.Println("JSON API server running on port: ", s.listenAddr)
 
-	http.ListenAndServe(s.listenAddr, router)
-
+	server := &http.Server{
+		Addr:         s.listenAddr,
+		IdleTimeout:  s.idleTimeOut,
+		ReadTimeout:  s.timeOut,
+		WriteTimeout: s.timeOut,
+		Handler:      router,
+	}
+	server.ListenAndServe()
 }
 
 func (s *APIServer) refresh(w http.ResponseWriter, r *http.Request) error {
@@ -242,8 +258,7 @@ func createJWT(account *Account) (string, error) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	return token.SignedString([]byte(JWT_SECRET))
+	return token.SignedString([]byte(os.Getenv("JWT_SECRET")))
 }
 
 func withJWTAuth(handleFunc http.HandlerFunc, s Storage) http.HandlerFunc {
@@ -293,16 +308,17 @@ func getJWT(r *http.Request) (string, error) {
 
 }
 
-// 603571
 func validateJWT(tokenString string) (*jwt.Token, error) {
+	fmt.Println(os.Getenv("JWT_SECRET"))
 	token, err := jwt.Parse(tokenString,
 		func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
-			return []byte(JWT_SECRET), nil
+			return []byte(os.Getenv("JWT_SECRET")), nil
 		})
 	if err != nil || !token.Valid {
+
 		return nil, err
 	}
 	return token, nil
@@ -340,7 +356,7 @@ func generateRefreshToken(account *Account) (string, error) {
 		},
 	}
 	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return refreshToken.SignedString([]byte(JWT_SECRET))
+	return refreshToken.SignedString([]byte(os.Getenv("JWT_SECRET")))
 }
 
 func validateRefreshToken(refToken string) (*jwt.Token, error) {
@@ -348,7 +364,7 @@ func validateRefreshToken(refToken string) (*jwt.Token, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return []byte(JWT_SECRET), nil
+		return []byte(os.Getenv("JWT_SECRET")), nil
 	})
 	if err != nil || !token.Valid {
 		return nil, err

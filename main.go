@@ -1,15 +1,19 @@
 package main
 
-import "log"
+import (
+	"go_sql/config"
+	"log"
+)
 
 func main() {
-	store, err := NewPostgresStore()
+	cfg := config.MustLoad()
+	store, err := NewPostgresStore(cfg.Storage)
 	if err != nil {
 		log.Fatal(err)
 	}
 	if err = store.Init(); err != nil {
 		log.Fatal(err)
 	}
-	server := NewAPIServer(":8080", store)
+	server := NewAPIServer(cfg.HttpServer, store)
 	server.Run()
 }
