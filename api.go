@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/go-chi/chi/v5"
 	"github.com/joho/godotenv"
 	"go_sql/config"
 	"log"
@@ -14,8 +15,9 @@ import (
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v4"
-	"github.com/gorilla/mux"
 )
+
+var serverError = errors.New("server error")
 
 type apiFunc func(http.ResponseWriter, *http.Request) error
 
@@ -51,18 +53,24 @@ func NewAPIServer(httpServerCfg *config.HttpServer, store Storage) *APIServer {
 }
 
 func (s *APIServer) Run() {
-	router := mux.NewRouter()
-	err := godotenv.Load()
+	err := godotenv.Load("./config/.env")
 	if err != nil {
 		log.Fatal(err)
 	}
-	router.HandleFunc("/account", makeHTTPHandleFunc(s.handleAccount))
-	router.HandleFunc("/account/{id}", withJWTAuth(makeHTTPHandleFunc(s.handleSingleAccount), s.store))
 
-	router.HandleFunc("/transfer", makeHTTPHandleFunc(s.handleTransfer))
+	r := chi.NewRouter()
+	r.Route("/auth", func(c chi.Router) {
+		c.Get("/refresh", s.refresh)
+		c.Post("/login", s.handleLogin)
+		c.Post("/signup", s.handleCreateAccount)
 
-	router.HandleFunc("/login", makeHTTPHandleFunc(s.handleLogin))
-	router.HandleFunc("/refresh", makeHTTPHandleFunc(s.refresh))
+	})
+
+	r.Route("/api", func(c chi.Router) {
+		c.Get("/account", s.handleGetAccount)
+		c.Get("/account/{id}", s.handleGetAccountById)
+		c.Post("/transfer", s.handleTransfer)
+	})
 
 	log.Println("JSON API server running on port: ", s.listenAddr)
 
@@ -71,97 +79,91 @@ func (s *APIServer) Run() {
 		IdleTimeout:  s.idleTimeOut,
 		ReadTimeout:  s.timeOut,
 		WriteTimeout: s.timeOut,
-		Handler:      router,
+		Handler:      r,
 	}
 	server.ListenAndServe()
 }
 
-func (s *APIServer) refresh(w http.ResponseWriter, r *http.Request) error {
+func (s *APIServer) refresh(w http.ResponseWriter, r *http.Request) {
+
 	cookie, err := r.Cookie("refresh-token")
+
 	if err != nil {
-		return err
+		permissionDenied(w)
+		return
 	}
+
 	refreshToken := cookie.Value
 	validatedJWT, err := validateRefreshToken(refreshToken)
 	if err != nil {
-		fmt.Println(err)
-		return err
+		permissionDenied(w)
+		return
 	}
 	tokenFromDb, err := s.store.GetRefreshToken(refreshToken)
 	if err != nil {
-		fmt.Println("ТУТ БЛЯ")
-		fmt.Println(err)
-		return err
-	}
-	if tokenFromDb.Token != refreshToken {
-		fmt.Println("Token are not equal")
-		return fmt.Errorf("not equal tokens")
+		permissionDenied(w)
+		return
 	}
 	payload := validatedJWT.Claims.(jwt.MapClaims)
 	account, err := s.store.GetAccountByID(int(payload["accountId"].(float64)))
 	if err != nil {
-		fmt.Println("НЕТ ТУТ")
-		fmt.Println("Error while getting account by id", payload["accountId"], err)
-		return err
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
 	}
 	newJWT, err := createJWT(account)
 	if err != nil {
-		fmt.Println("error while generating jwt", err)
-		return err
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
 	}
 	newRefreshToken, err := generateRefreshToken(account)
 	if err != nil {
-		fmt.Println("error while generating refresh token", err)
-		return err
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
 	}
 	err = s.store.DeleteRefreshTokenById(tokenFromDb.Id)
+
 	if err != nil {
 		fmt.Println(err)
 	}
+
 	s.store.CreateRefreshToken(newRefreshToken)
+
 	w.Header().Set("Authorization", "Bearer "+newJWT)
 	w.Header().Set("Set-Cookie", fmt.Sprintf("refresh-token=%s; HttpOnly", newRefreshToken))
-	fmt.Println("NEW TOKEN", newJWT)
-	fmt.Println("REFRESHED SUCCESSFULLY")
-	return nil
+
+	respForDebug := make(map[string]string, 2)
+	respForDebug["jwt"] = newJWT
+	respForDebug["refresh"] = newRefreshToken
+
+	WriteJSON(w, http.StatusOK, respForDebug)
 }
 
-func (s *APIServer) handleAccount(w http.ResponseWriter, r *http.Request) error {
-	switch r.Method {
-	case "GET":
-		return s.handleGetAccount(w, r)
-	case "POST":
-		return s.handleCreateAccount(w, r)
-	}
-	return fmt.Errorf("method not allowed: %s", r.Method)
-}
-
-// 1552347
-func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) error {
-	if r.Method != "POST" {
-		return fmt.Errorf("method not allowed %s", r.Method)
-	}
+func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	req := new(LoginRequest)
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		return err
+		permissionDenied(w)
+		return
 	}
 	acc, err := s.store.GetAccountByNumber(int(req.Number))
 	if err != nil {
-		return err
+		permissionDenied(w)
+		return
 	}
 
 	if !acc.ValidatePassword(req.Password) {
-		return fmt.Errorf("not authenticated")
+		permissionDenied(w)
+		return
 	}
 
 	token, err := createJWT(acc)
 	if err != nil {
-		return err
+		permissionDenied(w)
+		return
 	}
 	refreshToken, err := generateRefreshToken(acc)
 	if err != nil {
-		fmt.Println(err)
-		return err
+		permissionDenied(w)
+		return
 	}
 
 	s.store.CreateRefreshToken(refreshToken)
@@ -174,59 +176,53 @@ func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) error {
 		RefreshToken: refreshToken,
 		Number:       acc.Number,
 	}
-
-	return WriteJSON(w, http.StatusOK, resp)
-}
-
-func (s *APIServer) handleSingleAccount(w http.ResponseWriter, r *http.Request) error {
-	switch r.Method {
-	case "GET":
-		return s.handleGetAccountById(w, r)
-	case "DELETE":
-		return s.handleDeleteAccount(w, r)
-	}
-	return fmt.Errorf("method is not allowed: %s", r.Method)
+	WriteJSON(w, http.StatusOK, resp)
 }
 
 // GET /account
-func (s *APIServer) handleGetAccount(w http.ResponseWriter, r *http.Request) error {
+func (s *APIServer) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 	accounts, err := s.store.GetAccounts()
 	if err != nil {
-		return err
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
 	}
-	return WriteJSON(w, http.StatusOK, accounts)
+	WriteJSON(w, http.StatusOK, accounts)
 
 }
 
 // GET /account/{id}
-func (s *APIServer) handleGetAccountById(w http.ResponseWriter, r *http.Request) error {
+func (s *APIServer) handleGetAccountById(w http.ResponseWriter, r *http.Request) {
 	id, err := getId(r)
 	if err != nil {
-		return err
+		WriteJSON(w, http.StatusBadRequest, err)
+		return
 	}
 	account, err := s.store.GetAccountByID(id)
 	if err != nil {
-		return err
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
 	}
-	return WriteJSON(w, http.StatusOK, account)
+	WriteJSON(w, http.StatusOK, account)
 }
 
-func (s *APIServer) handleCreateAccount(w http.ResponseWriter, r *http.Request) error {
+func (s *APIServer) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	req := new(CreateAccountRequest)
 	defer r.Body.Close()
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		return err
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("bad request"))
+		return
 	}
 
 	account, err := NewAccount(req.FirstName, req.LastName, req.Password)
 	if err != nil {
-		return err
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
 	}
 	if err := s.store.CreateAccount(account); err != nil {
-		return err
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
 	}
-
-	return WriteJSON(w, http.StatusOK, account)
+	WriteJSON(w, http.StatusOK, account)
 }
 
 func (s *APIServer) handleDeleteAccount(w http.ResponseWriter, r *http.Request) error {
@@ -240,13 +236,14 @@ func (s *APIServer) handleDeleteAccount(w http.ResponseWriter, r *http.Request) 
 	return WriteJSON(w, http.StatusOK, map[string]int{"deleted": id})
 }
 
-func (s *APIServer) handleTransfer(w http.ResponseWriter, r *http.Request) error {
+func (s *APIServer) handleTransfer(w http.ResponseWriter, r *http.Request) {
 	transferReq := new(TransferRequest)
 	defer r.Body.Close()
 	if err := json.NewDecoder(r.Body).Decode(transferReq); err != nil {
-		return err
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("invalid data"))
+		return
 	}
-	return WriteJSON(w, http.StatusOK, transferReq)
+	WriteJSON(w, http.StatusOK, transferReq)
 }
 
 func createJWT(account *Account) (string, error) {
@@ -256,9 +253,43 @@ func createJWT(account *Account) (string, error) {
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Second * 30)),
 		},
 	}
-
+	fmt.Println(os.Getenv("JWT_SECRET"))
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(os.Getenv("JWT_SECRET")))
+}
+
+func (s *APIServer) jwtMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("Calling JWT auth Middleware")
+		tokenString, err := getJWT(r)
+		if err != nil {
+			fmt.Println(err)
+			permissionDenied(w)
+			return
+		}
+		token, err := validateJWT(tokenString)
+		if err != nil {
+			fmt.Println(err)
+			permissionDenied(w)
+			return
+		}
+		userID, err := getId(r)
+		if err != nil {
+			permissionDenied(w)
+			return
+		}
+		account, err := s.store.GetAccountByID(userID)
+		if err != nil {
+			permissionDenied(w)
+			return
+		}
+		claims := token.Claims.(jwt.MapClaims)
+		if float64(account.Number) != claims["accountNumber"] {
+			permissionDenied(w)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func withJWTAuth(handleFunc http.HandlerFunc, s Storage) http.HandlerFunc {
@@ -340,7 +371,7 @@ func makeHTTPHandleFunc(f apiFunc) http.HandlerFunc {
 }
 
 func getId(r *http.Request) (int, error) {
-	idStr := mux.Vars(r)["id"]
+	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
 		return id, fmt.Errorf("invalid id %s", idStr)

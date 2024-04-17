@@ -16,4 +16,9 @@ func main() {
 	}
 	server := NewAPIServer(cfg.HttpServer, store)
 	server.Run()
+
 }
+
+// do Transfer
+// do /logout
+// do update account
