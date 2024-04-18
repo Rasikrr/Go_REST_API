@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,7 +41,6 @@ type APIServer struct {
 	store       Storage
 	timeOut     time.Duration
 	idleTimeOut time.Duration
-	jwtSecret   string
 }
 
 func NewAPIServer(httpServerCfg *config.HttpServer, store Storage) *APIServer {
@@ -63,13 +63,14 @@ func (s *APIServer) Run() {
 		c.Get("/refresh", s.refresh)
 		c.Post("/login", s.handleLogin)
 		c.Post("/signup", s.handleCreateAccount)
-
+		c.Get("/logout", s.handleLogout)
 	})
 
 	r.Route("/api", func(c chi.Router) {
 		c.Get("/account", s.handleGetAccount)
 		c.With(s.jwtMiddleware).Get("/account/{id}", s.handleGetAccountById)
-		c.Post("/transfer", s.handleTransfer)
+		c.With(s.jwtMiddleware).Delete("/account/{id}", s.handleDeleteAccount)
+		c.With(s.jwtMiddleware).Post("/account/transfer/{id}", s.handleTransfer)
 	})
 
 	log.Println("JSON API server running on port: ", s.listenAddr)
@@ -87,7 +88,6 @@ func (s *APIServer) Run() {
 func (s *APIServer) refresh(w http.ResponseWriter, r *http.Request) {
 
 	cookie, err := r.Cookie("refresh-token")
-
 	if err != nil {
 		permissionDenied(w)
 		return
@@ -130,7 +130,11 @@ func (s *APIServer) refresh(w http.ResponseWriter, r *http.Request) {
 	s.store.CreateRefreshToken(newRefreshToken)
 
 	w.Header().Set("Authorization", "Bearer "+newJWT)
-	w.Header().Set("Set-Cookie", fmt.Sprintf("refresh-token=%s; HttpOnly", newRefreshToken))
+	http.SetCookie(w, &http.Cookie{
+		HttpOnly: true,
+		Name:     "refresh-token",
+		Value:    newRefreshToken,
+	})
 
 	respForDebug := make(map[string]string, 2)
 	respForDebug["jwt"] = newJWT
@@ -140,6 +144,7 @@ func (s *APIServer) refresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) {
+	fmt.Println(r.URL)
 	req := new(LoginRequest)
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 		permissionDenied(w)
@@ -178,6 +183,28 @@ func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Number:       acc.Number,
 	}
 	WriteJSON(w, http.StatusOK, resp)
+}
+
+func (s *APIServer) handleLogout(w http.ResponseWriter, r *http.Request) {
+	fmt.Println(r.URL)
+	cookie, err := r.Cookie("refresh-token")
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("invalid token"))
+		return
+	}
+	if err = s.store.DeleteRefreshToken(cookie.Value); err != nil {
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
+	}
+	w.Header().Del("Authorization")
+	http.SetCookie(w, &http.Cookie{
+		HttpOnly: true,
+		Name:     "refresh-token",
+		Value:    "",
+	})
+	WriteJSON(w, http.StatusOK, map[string]string{
+		"response": "logged out",
+	})
 }
 
 // GET /account
@@ -226,15 +253,17 @@ func (s *APIServer) handleCreateAccount(w http.ResponseWriter, r *http.Request) 
 	WriteJSON(w, http.StatusOK, account)
 }
 
-func (s *APIServer) handleDeleteAccount(w http.ResponseWriter, r *http.Request) error {
+func (s *APIServer) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	id, err := getId(r)
 	if err != nil {
-		return err
+		permissionDenied(w)
+		return
 	}
 	if err = s.store.DeleteAccount(id); err != nil {
-		return err
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
 	}
-	return WriteJSON(w, http.StatusOK, map[string]int{"deleted": id})
+	WriteJSON(w, http.StatusOK, map[string]int{"deleted": id})
 }
 
 func (s *APIServer) handleTransfer(w http.ResponseWriter, r *http.Request) {
@@ -244,14 +273,40 @@ func (s *APIServer) handleTransfer(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusBadRequest, NewAPIError("invalid data"))
 		return
 	}
-	WriteJSON(w, http.StatusOK, transferReq)
+	toAccount, err := s.store.GetAccountByNumber(transferReq.ToAccount)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("no account with this number"))
+		return
+	}
+	fromAccountId, err := getId(r)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("invalid id"))
+		return
+	}
+	fromAccount, err := s.store.GetAccountByID(fromAccountId)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("no account with this number"))
+		return
+	}
+	if fromAccount.Balance-transferReq.Amount < 0 {
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("insufficient funds"))
+		return
+	}
+	if err = s.store.Transfer(context.Background(), fromAccount, toAccount, transferReq.Amount); err != nil {
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, map[string]string{
+		"response": "success",
+	})
 }
 
 func createJWT(account *Account) (string, error) {
 	claims := &UserClaims{
 		AccountNumber: account.Number,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Second * 30)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute * 5)),
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

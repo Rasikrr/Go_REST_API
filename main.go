@@ -19,6 +19,4 @@ func main() {
 
 }
 
-// do Transfer
-// do /logout
 // do update account

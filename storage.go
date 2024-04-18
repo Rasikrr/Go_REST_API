@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	_ "github.com/lib/pq"
@@ -15,8 +16,10 @@ type Storage interface {
 	UpdateAccount(*Account) error
 	GetAccountByNumber(int) (*Account, error)
 	CreateRefreshToken(string) error
+	DeleteRefreshToken(string) error
 	DeleteRefreshTokenById(int) error
 	GetRefreshToken(string) (*RefreshToken, error)
+	Transfer(context.Context, *Account, *Account, int64) error
 }
 
 type PostgresStore struct {
@@ -77,6 +80,12 @@ func (s *PostgresStore) GetRefreshToken(token string) (*RefreshToken, error) {
 func (s *PostgresStore) DeleteRefreshTokenById(id int) error {
 	query := `DELETE FROM refresh_tokens WHERE id=$1`
 	_, err := s.db.Exec(query, id)
+	return err
+}
+
+func (s *PostgresStore) DeleteRefreshToken(tkn string) error {
+	query := `DELETE FROM refresh_tokens WHERE token=$1`
+	_, err := s.db.Exec(query, tkn)
 	return err
 }
 
@@ -163,6 +172,31 @@ func (s *PostgresStore) createRefreshTokensTable() error {
 
 func (s *PostgresStore) UpdateAccount(account *Account) error {
 	return nil
+}
+
+func (s *PostgresStore) Transfer(ctx context.Context, from *Account, to *Account, amount int64) error {
+	query1 := `UPDATE account 
+			SET balance=balance-$1
+			WHERE id=$2`
+	query2 := `UPDATE account
+			SET balance=balance+$1
+			WHERE id=$2`
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		fmt.Println(1, err)
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(query1, amount, from.ID); err != nil {
+		fmt.Println(2, err)
+		return err
+	}
+	if _, err = tx.Exec(query2, amount, to.ID); err != nil {
+		fmt.Println(3, err)
+		return err
+	}
+	return tx.Commit()
+
 }
 
 func scanIntoAccounts(rows *sql.Rows) (*Account, error) {
