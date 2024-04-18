@@ -44,6 +44,11 @@ type CreateAccountRequest struct {
 	Password  string `json:"password"`
 }
 
+type UpdateAccountRequest struct {
+	FirstName string `json:"firstName,omitempty"`
+	LastName  string `json:"lastName,omitempty"`
+}
+
 type Account struct {
 	ID                int       `json:"id"`
 	FirstName         string    `json:"firstName"`

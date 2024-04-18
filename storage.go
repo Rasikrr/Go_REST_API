@@ -13,7 +13,7 @@ type Storage interface {
 	GetAccountByID(int) (*Account, error)
 	GetAccounts() ([]*Account, error)
 	DeleteAccount(int) error
-	UpdateAccount(*Account) error
+	UpdateAccount(request *UpdateAccountRequest, id int) error
 	GetAccountByNumber(int) (*Account, error)
 	CreateRefreshToken(string) error
 	DeleteRefreshToken(string) error
@@ -170,8 +170,10 @@ func (s *PostgresStore) createRefreshTokensTable() error {
 	return err
 }
 
-func (s *PostgresStore) UpdateAccount(account *Account) error {
-	return nil
+func (s *PostgresStore) UpdateAccount(updateReq *UpdateAccountRequest, id int) error {
+	query := `UPDATE account SET first_name=$1, last_name=$2 WHERE id=$3`
+	_, err := s.db.Exec(query, updateReq.FirstName, updateReq.LastName, id)
+	return err
 }
 
 func (s *PostgresStore) Transfer(ctx context.Context, from *Account, to *Account, amount int64) error {

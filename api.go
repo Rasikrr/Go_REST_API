@@ -70,7 +70,9 @@ func (s *APIServer) Run() {
 		c.Get("/account", s.handleGetAccount)
 		c.With(s.jwtMiddleware).Get("/account/{id}", s.handleGetAccountById)
 		c.With(s.jwtMiddleware).Delete("/account/{id}", s.handleDeleteAccount)
+		c.With(s.jwtMiddleware).Put("/account/{id}", s.handleUpdateAccount)
 		c.With(s.jwtMiddleware).Post("/account/transfer/{id}", s.handleTransfer)
+
 	})
 
 	log.Println("JSON API server running on port: ", s.listenAddr)
@@ -343,6 +345,40 @@ func (s *APIServer) jwtMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *APIServer) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
+	id, err := getId(r)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("invalid id"))
+		return
+	}
+	fmt.Println(id)
+	defer r.Body.Close()
+	updateReq := new(UpdateAccountRequest)
+	if err = json.NewDecoder(r.Body).Decode(updateReq); err != nil {
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("invalid data"))
+		return
+	}
+	acc, err := s.store.GetAccountByID(id)
+	if err != nil {
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
+	}
+	if updateReq.FirstName == "" {
+		updateReq.FirstName = acc.FirstName
+	}
+	if updateReq.LastName == "" {
+		updateReq.LastName = acc.LastName
+	}
+	if err = s.store.UpdateAccount(updateReq, id); err != nil {
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]string{
+		"response": "updated",
+	})
+
 }
 
 func getJWT(r *http.Request) (string, error) {
