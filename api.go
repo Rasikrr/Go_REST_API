@@ -285,8 +285,21 @@ func (s *APIServer) handleCreateAccount(w http.ResponseWriter, r *http.Request) 
 		WriteJSON(w, http.StatusInternalServerError, NewAPIError("error while creating email Verification"))
 		return
 	}
+	verificationURL := fmt.Sprintf("http://localhost:8080/auth/verify/%s", verif.UuidUrl)
+	err = s.emailSender.SendEmail(
+		"Account Verification",
+		emailverif.Template(account.FirstName, verificationURL),
+		[]string{account.Email},
+		[]string{},
+		[]string{},
+		[]string{},
+	)
+	if err != nil {
+		fmt.Println("Error while sending verification email")
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
+	}
 	WriteJSON(w, http.StatusOK, account)
-	fmt.Println(verif.UuidUrl)
 }
 
 func (s *APIServer) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
