@@ -16,6 +16,7 @@ type Storage interface {
 	UpdateAccount(request *UpdateAccountRequest, id int) error
 	GetAccountByNumber(int) (*Account, error)
 	VerifyAccountById(int) error
+	ChangeAccountPasswordById(string, int) error
 
 	Transfer(context.Context, *Account, *Account, int64) error
 
@@ -108,6 +109,12 @@ func (s *PostgresStore) GetEmailVerificationByUUID(uuid string) (*EmailVerify, e
 		return nil, err
 	}
 	return verif, nil
+}
+
+func (s *PostgresStore) ChangeAccountPasswordById(newPass string, id int) error {
+	query := `UPDATE account SET encrypted_password=$1 WHERE id=$2`
+	_, err := s.db.Exec(query, newPass, id)
+	return err
 }
 
 func (s *PostgresStore) DeleteEmailVerificationById(id int) error {

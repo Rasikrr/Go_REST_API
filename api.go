@@ -68,6 +68,7 @@ func (s *APIServer) Run() {
 		c.Post("/signup", s.handleCreateAccount)
 		c.Get("/logout", s.handleLogout)
 		c.Get("/verify/{uuid}", s.handleVerification)
+		c.With(s.customJwtMiddleware).Post("/password/change", s.handleChangePassword)
 	})
 
 	r.Route("/api", func(c chi.Router) {
@@ -88,6 +89,35 @@ func (s *APIServer) Run() {
 		Handler:      r,
 	}
 	server.ListenAndServe()
+}
+
+func (s *APIServer) customJwtMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		accNum, err := getAccNumFromCookie(r)
+		if err != nil {
+			permissionDenied(w)
+			return
+		}
+		tokenString, err := getJWT(r)
+		if err != nil {
+			fmt.Println(2, err)
+			permissionDenied(w)
+			return
+		}
+		token, err := validateJWT(tokenString)
+		if err != nil {
+			fmt.Println(4, err)
+			permissionDenied(w)
+			return
+		}
+		claims := token.Claims.(jwt.MapClaims)
+		if int(claims["accountNumber"].(float64)) != accNum {
+			fmt.Println(5, err)
+			permissionDenied(w)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *APIServer) refresh(w http.ResponseWriter, r *http.Request) {
@@ -184,7 +214,8 @@ func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	s.store.CreateRefreshToken(refreshToken)
 
-	w.Header().Set("Set-Cookie", fmt.Sprintf("refresh-token=%s; HttpOnly", refreshToken))
+	setCookies(&w, refreshToken, strconv.Itoa(int(acc.Number)))
+
 	w.Header().Set("Authorization", "Bearer "+token)
 
 	resp := LoginResponse{
@@ -207,13 +238,35 @@ func (s *APIServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Del("Authorization")
-	http.SetCookie(w, &http.Cookie{
+	deleteCookies(&w)
+	WriteJSON(w, http.StatusOK, map[string]string{
+		"response": "logged out",
+	})
+}
+
+func deleteCookies(w *http.ResponseWriter) {
+	http.SetCookie(*w, &http.Cookie{
 		HttpOnly: true,
 		Name:     "refresh-token",
 		Value:    "",
 	})
-	WriteJSON(w, http.StatusOK, map[string]string{
-		"response": "logged out",
+	http.SetCookie(*w, &http.Cookie{
+		HttpOnly: true,
+		Name:     "accNum",
+		Value:    "",
+	})
+}
+
+func setCookies(w *http.ResponseWriter, refreshToken string, accNum string) {
+	http.SetCookie(*w, &http.Cookie{
+		HttpOnly: true,
+		Name:     "refresh-token",
+		Value:    refreshToken,
+	})
+	http.SetCookie(*w, &http.Cookie{
+		HttpOnly: true,
+		Name:     "accNum",
+		Value:    accNum,
 	})
 }
 
@@ -377,9 +430,11 @@ func (s *APIServer) jwtMiddleware(next http.Handler) http.Handler {
 		}
 		userID, err := getId(r)
 		if err != nil {
+			fmt.Println("Wrong id", userID)
 			permissionDenied(w)
 			return
 		}
+
 		account, err := s.store.GetAccountByID(userID)
 		if err != nil {
 			permissionDenied(w)
@@ -462,6 +517,42 @@ func (s *APIServer) handleVerification(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (s *APIServer) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	req := new(ChangePasswordRequest)
+	defer r.Body.Close()
+	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("invalid data"))
+		return
+	}
+	accNum, err := getAccNumFromCookie(r)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("invalid cookie"))
+		return
+	}
+	acc, err := s.store.GetAccountByNumber(accNum)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("invalid acc num"))
+		return
+	}
+	if !acc.ValidatePassword(req.OldPassword) {
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("old password is not same"))
+		return
+	}
+	encPass, err := GenerateEncryptedPassword(req.NewPassword)
+	if err != nil {
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
+	}
+	err = s.store.ChangeAccountPasswordById(encPass, acc.ID)
+	if err != nil {
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]string{
+		"resp": "password changed",
+	})
+}
+
 func getJWT(r *http.Request) (string, error) {
 	headerValue := r.Header.Get("Authorization")
 	if headerValue == "" {
@@ -497,14 +588,6 @@ func WriteJSON(w http.ResponseWriter, status int, v any) error {
 	return json.NewEncoder(w).Encode(v)
 }
 
-func makeHTTPHandleFunc(f apiFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if err := f(w, r); err != nil {
-			WriteJSON(w, http.StatusBadRequest, APIError{err.Error()})
-		}
-	}
-}
-
 func getId(r *http.Request) (int, error) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
@@ -512,6 +595,18 @@ func getId(r *http.Request) (int, error) {
 		return id, fmt.Errorf("invalid id %s", idStr)
 	}
 	return id, nil
+}
+
+func getAccNumFromCookie(r *http.Request) (int, error) {
+	cookie, err := r.Cookie("accNum")
+	if err != nil {
+		return -1, err
+	}
+	accNum, err := strconv.Atoi(cookie.Value)
+	if err != nil {
+		return -1, err
+	}
+	return accNum, nil
 }
 
 func getUUID(r *http.Request) (string, error) {

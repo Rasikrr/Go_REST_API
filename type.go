@@ -16,6 +16,11 @@ type LoginResponse struct {
 	RefreshToken string `json:"refreshToken"`
 }
 
+type ChangePasswordRequest struct {
+	OldPassword string `json:"oldPassword"`
+	NewPassword string `json:"newPassword"`
+}
+
 type UserClaims struct {
 	AccountNumber int64 `json:"accountNumber"`
 	jwt.RegisteredClaims
@@ -76,18 +81,23 @@ func (a *Account) ValidatePassword(pw string) bool {
 }
 
 func NewAccount(req *CreateAccountRequest) (*Account, error) {
-	encPw, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	encPw, err := GenerateEncryptedPassword(req.Password)
 	if err != nil {
 		return nil, err
 	}
 	return &Account{
 		FirstName:         req.FirstName,
 		LastName:          req.LastName,
-		EncryptedPassword: string(encPw),
+		EncryptedPassword: encPw,
 		Email:             req.Email,
 		Number:            int64(rand.Intn(10000000)),
 		CreatedAt:         time.Now().UTC(),
 	}, nil
+}
+
+func GenerateEncryptedPassword(pass string) (string, error) {
+	encPw, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+	return string(encPw), err
 }
 
 func NewEmailVerification(accountNum int) (*EmailVerify, error) {
