@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/joho/godotenv"
 	"go_sql/config"
+	"go_sql/emailverif"
 	"log"
 	"net/http"
 	"os"
@@ -39,14 +40,16 @@ func permissionDenied(w http.ResponseWriter) {
 type APIServer struct {
 	listenAddr  string
 	store       Storage
+	emailSender emailverif.EmailSender
 	timeOut     time.Duration
 	idleTimeOut time.Duration
 }
 
-func NewAPIServer(httpServerCfg *config.HttpServer, store Storage) *APIServer {
+func NewAPIServer(httpServerCfg *config.HttpServer, store Storage, sender emailverif.EmailSender) *APIServer {
 	return &APIServer{
 		listenAddr:  httpServerCfg.Address,
 		store:       store,
+		emailSender: sender,
 		timeOut:     httpServerCfg.Timeout,
 		idleTimeOut: httpServerCfg.IdleTimeout,
 	}

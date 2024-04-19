@@ -2,6 +2,7 @@ package main
 
 import (
 	"go_sql/config"
+	"go_sql/emailverif"
 	"log"
 )
 
@@ -11,12 +12,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	emailSender, err := emailverif.NewGmailSender(cfg.EmailServer)
+	if err != nil {
+		panic(err)
+	}
 	if err = store.Init(); err != nil {
 		log.Fatal(err)
 	}
-	server := NewAPIServer(cfg.HttpServer, store)
+	server := NewAPIServer(cfg.HttpServer, store, emailSender)
 	server.Run()
-
 }
 
 // do deleting refresh while login
