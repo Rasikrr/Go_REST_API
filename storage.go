@@ -15,11 +15,18 @@ type Storage interface {
 	DeleteAccount(int) error
 	UpdateAccount(request *UpdateAccountRequest, id int) error
 	GetAccountByNumber(int) (*Account, error)
+	VerifyAccountById(int) error
+
+	Transfer(context.Context, *Account, *Account, int64) error
+
 	CreateRefreshToken(string) error
 	DeleteRefreshToken(string) error
 	DeleteRefreshTokenById(int) error
 	GetRefreshToken(string) (*RefreshToken, error)
-	Transfer(context.Context, *Account, *Account, int64) error
+
+	CreateEmailVerification(*EmailVerify) error
+	GetEmailVerificationByUUID(string) (*EmailVerify, error)
+	DeleteEmailVerificationById(int) error
 }
 
 type PostgresStore struct {
@@ -42,11 +49,16 @@ func NewPostgresStore(dbCfg *config.Storage) (*PostgresStore, error) {
 }
 
 func (s *PostgresStore) Init() error {
-	err := s.createRefreshTokensTable()
+	err := s.createAccountTable()
 	if err != nil {
 		return err
 	}
-	return s.createAccountTable()
+	err = s.createEmailVerifyTable()
+	if err != nil {
+		return err
+	}
+	return s.createRefreshTokensTable()
+
 }
 
 func (s *PostgresStore) createAccountTable() error {
@@ -55,10 +67,59 @@ func (s *PostgresStore) createAccountTable() error {
     	first_name VARCHAR(50) NOT NULL,
     	last_name VARCHAR(50) NOT NULL,
     	encrypted_password VARCHAR(100) NOT NULL,
-    	number SERIAL,
+    	email VARCHAR(50) NOT NULL UNIQUE,
+    	is_verified BOOLEAN DEFAULT FALSE,
+    	number INT NOT NULL UNIQUE,
     	balance BIGINT,
     	created_at TIMESTAMP
-	)`)
+	);`)
+	return err
+}
+
+func (s *PostgresStore) createRefreshTokensTable() error {
+	query := `CREATE TABLE IF NOT EXISTS refresh_tokens(
+	id SERIAL PRIMARY KEY,
+	token VARCHAR(255) NOT NULL UNIQUE
+	);`
+	_, err := s.db.Exec(query)
+	return err
+}
+
+func (s *PostgresStore) createEmailVerifyTable() error {
+	query := `CREATE TABLE IF NOT EXISTS email_verify(
+	id SERIAL PRIMARY KEY,
+	account_num INT,
+	uuid_url VARCHAR(50),
+	FOREIGN KEY (account_num) REFERENCES account(number) ON DELETE CASCADE
+	);`
+	_, err := s.db.Exec(query)
+	return err
+}
+
+func (s *PostgresStore) GetEmailVerificationByUUID(uuid string) (*EmailVerify, error) {
+	verif := new(EmailVerify)
+	query := `SELECT * FROM email_verify WHERE uuid_url=$1`
+	row := s.db.QueryRow(query, uuid)
+	err := row.Scan(&verif.Id,
+		&verif.AccountNum,
+		&verif.UuidUrl,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return verif, nil
+}
+
+func (s *PostgresStore) DeleteEmailVerificationById(id int) error {
+	query := `DELETE FROM email_verify WHERE id=$1`
+	_, err := s.db.Exec(query, id)
+	return err
+}
+
+func (s *PostgresStore) CreateEmailVerification(req *EmailVerify) error {
+	query := `INSERT INTO email_verify(account_num, uuid_url)
+	VALUES($1, $2)`
+	_, err := s.db.Exec(query, req.AccountNum, req.UuidUrl)
 	return err
 }
 
@@ -91,13 +152,14 @@ func (s *PostgresStore) DeleteRefreshToken(tkn string) error {
 
 func (s *PostgresStore) CreateAccount(account *Account) error {
 	query := `INSERT INTO account
-    (first_name, last_name, encrypted_password, number, balance, created_at)
-	VALUES($1, $2, $3, $4, $5, $6)`
+    (first_name, last_name, encrypted_password, email, number, balance, created_at)
+	VALUES($1, $2, $3, $4, $5, $6, $7)`
 	_, err := s.db.Exec(
 		query,
 		account.FirstName,
 		account.LastName,
 		account.EncryptedPassword,
+		account.Email,
 		account.Number,
 		account.Balance,
 		account.CreatedAt,
@@ -112,6 +174,8 @@ func (s *PostgresStore) GetAccountByID(id int) (*Account, error) {
 		&account.FirstName,
 		&account.LastName,
 		&account.EncryptedPassword,
+		&account.Email,
+		&account.IsVerified,
 		&account.Number,
 		&account.Balance,
 		&account.CreatedAt)
@@ -129,6 +193,8 @@ func (s *PostgresStore) GetAccountByNumber(num int) (*Account, error) {
 		&account.FirstName,
 		&account.LastName,
 		&account.EncryptedPassword,
+		&account.Email,
+		&account.IsVerified,
 		&account.Number,
 		&account.Balance,
 		&account.CreatedAt)
@@ -161,18 +227,15 @@ func (s *PostgresStore) DeleteAccount(id int) error {
 	return err
 }
 
-func (s *PostgresStore) createRefreshTokensTable() error {
-	query := `CREATE TABLE IF NOT EXISTS refresh_tokens(
-	id SERIAL PRIMARY KEY,
-	token VARCHAR(255) NOT NULL UNIQUE
-	);`
-	_, err := s.db.Exec(query)
-	return err
-}
-
 func (s *PostgresStore) UpdateAccount(updateReq *UpdateAccountRequest, id int) error {
 	query := `UPDATE account SET first_name=$1, last_name=$2 WHERE id=$3`
 	_, err := s.db.Exec(query, updateReq.FirstName, updateReq.LastName, id)
+	return err
+}
+
+func (s *PostgresStore) VerifyAccountById(id int) error {
+	query := `UPDATE account SET is_verified=true WHERE id=$1`
+	_, err := s.db.Exec(query, id)
 	return err
 }
 
@@ -208,6 +271,8 @@ func scanIntoAccounts(rows *sql.Rows) (*Account, error) {
 		&account.FirstName,
 		&account.LastName,
 		&account.EncryptedPassword,
+		&account.Email,
+		&account.IsVerified,
 		&account.Number,
 		&account.Balance,
 		&account.CreatedAt,

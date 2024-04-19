@@ -67,6 +67,7 @@ func (s *APIServer) Run() {
 		c.Post("/login", s.handleLogin)
 		c.Post("/signup", s.handleCreateAccount)
 		c.Get("/logout", s.handleLogout)
+		c.Get("/verify/{uuid}", s.handleVerification)
 	})
 
 	r.Route("/api", func(c chi.Router) {
@@ -75,7 +76,6 @@ func (s *APIServer) Run() {
 		c.With(s.jwtMiddleware).Delete("/account/{id}", s.handleDeleteAccount)
 		c.With(s.jwtMiddleware).Put("/account/{id}", s.handleUpdateAccount)
 		c.With(s.jwtMiddleware).Post("/account/transfer/{id}", s.handleTransfer)
-
 	})
 
 	log.Println("JSON API server running on port: ", s.listenAddr)
@@ -165,6 +165,11 @@ func (s *APIServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		permissionDenied(w)
 		return
 	}
+	if !acc.IsVerified {
+		permissionDenied(w)
+		fmt.Println("Not verified")
+		return
+	}
 
 	token, err := createJWT(acc)
 	if err != nil {
@@ -246,16 +251,42 @@ func (s *APIServer) handleCreateAccount(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	account, err := NewAccount(req.FirstName, req.LastName, req.Password)
+	account, err := NewAccount(req)
 	if err != nil {
 		WriteJSON(w, http.StatusInternalServerError, serverError)
 		return
 	}
-	if err := s.store.CreateAccount(account); err != nil {
+	if err = s.store.CreateAccount(account); err != nil {
 		WriteJSON(w, http.StatusInternalServerError, serverError)
 		return
 	}
+	err = s.emailSender.SendEmail(
+		"Creating Account",
+		"<h1>Created successfully",
+		[]string{req.Email},
+		[]string{},
+		[]string{},
+		[]string{},
+	)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, NewAPIError(err.Error()))
+		return
+	}
+	verif, err := NewEmailVerification(int(account.Number))
+	if err != nil {
+		fmt.Println("error while creating email Verification")
+		WriteJSON(w, http.StatusInternalServerError, NewAPIError("error while creating email Verification"))
+		return
+	}
+	err = s.store.CreateEmailVerification(verif)
+	if err != nil {
+		fmt.Println(err)
+		fmt.Println("error while creating email Verification")
+		WriteJSON(w, http.StatusInternalServerError, NewAPIError("error while creating email Verification"))
+		return
+	}
 	WriteJSON(w, http.StatusOK, account)
+	fmt.Println(verif.UuidUrl)
 }
 
 func (s *APIServer) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
@@ -384,6 +415,40 @@ func (s *APIServer) handleUpdateAccount(w http.ResponseWriter, r *http.Request) 
 
 }
 
+func (s *APIServer) handleVerification(w http.ResponseWriter, r *http.Request) {
+	uuid, err := getUUID(r)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("invalid"))
+		return
+	}
+	resp, err := s.store.GetEmailVerificationByUUID(uuid)
+	if err != nil {
+		fmt.Println("invalid uuid")
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("invalid uuid"))
+		return
+	}
+	err = s.store.DeleteEmailVerificationById(resp.Id)
+	if err != nil {
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
+	}
+	acc, err := s.store.GetAccountByNumber(resp.AccountNum)
+	if err != nil {
+		fmt.Println("error while getting account")
+		WriteJSON(w, http.StatusBadRequest, NewAPIError("invalid acc number"))
+		return
+	}
+	err = s.store.VerifyAccountById(acc.ID)
+	if err != nil {
+		WriteJSON(w, http.StatusInternalServerError, serverError)
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]string{
+		"resp": "verified",
+	})
+
+}
+
 func getJWT(r *http.Request) (string, error) {
 	headerValue := r.Header.Get("Authorization")
 	if headerValue == "" {
@@ -434,6 +499,14 @@ func getId(r *http.Request) (int, error) {
 		return id, fmt.Errorf("invalid id %s", idStr)
 	}
 	return id, nil
+}
+
+func getUUID(r *http.Request) (string, error) {
+	uuid := chi.URLParam(r, "uuid")
+	if uuid == "" {
+		return "", fmt.Errorf("uuid is null")
+	}
+	return uuid, nil
 }
 
 func generateRefreshToken(account *Account) (string, error) {

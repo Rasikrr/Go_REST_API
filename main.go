@@ -21,6 +21,9 @@ func main() {
 	}
 	server := NewAPIServer(cfg.HttpServer, store, emailSender)
 	server.Run()
+
 }
 
-// do deleting refresh while login
+// TODO async email sending
+// TODO data validation
+// TODO email with verification link
